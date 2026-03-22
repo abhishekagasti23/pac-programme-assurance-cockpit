@@ -1,39 +1,50 @@
-name: Publish PAC from Local
+name: PAC CI/CD
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  publish:
-    runs-on: self-hosted   # runs on YOUR machine
+  test:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Configure git
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate imports
         run: |
-          git config --global user.name "abhishekagasti23"
-          git config --global user.email "abhishekagasti23@users.noreply.github.com"
+          python -c "from data_fusion import run_medallion, SILVER_SCHEMA; print('data_fusion OK')"
+          python -c "from health_engine import GateReadinessModel, portfolio_summary; print('health_engine OK')"
+          python -c "from narrative_engine import generate_exception_report; print('narrative_engine OK')"
+          python -c "from demo_data import generate_demo_portfolio; print('demo_data OK')"
 
-      - name: Initialise and push PAC folder
+      - name: Smoke test pipeline
         run: |
-          cd "E:\Data Science New Projects\Kpmg Project\Programme Assurance Cockpit"
+          python - << 'PYEOF'
+          from datetime import datetime
+          from data_fusion import run_medallion
+          from health_engine import GateReadinessModel, portfolio_summary
+          from demo_data import generate_demo_portfolio
 
-          git init
-          git checkout -b main
+          raw = generate_demo_portfolio()
+          _, silver, gold = run_medallion(raw, data_date=datetime(2025, 1, 15))
 
-          # Write .gitignore
-          echo "__pycache__/" > .gitignore
-          echo "*.pyc" >> .gitignore
-          echo ".env" >> .gitignore
-          echo "venv/" >> .gitignore
-          echo ".DS_Store" >> .gitignore
+          gm = GateReadinessModel()
+          gm.train()
+          gold["gate_pass_probability"] = gm.predict(gold)
 
-          git add -A
-          git commit -m "Initial commit: PAC Programme Assurance Cockpit v1.0"
-
-          git remote remove origin 2>nul || true
-          git remote add origin https://abhishekagasti23:${{ secrets.GH_PAT }}@github.com/abhishekagasti23/pac-programme-assurance-cockpit.git
-
-          git push -u origin main --force
-
-          echo "Published: https://github.com/abhishekagasti23/pac-programme-assurance-cockpit"
-        shell: cmd
+          ps = portfolio_summary(gold)
+          print(f"Pipeline OK — {ps['total_projects']} projects | RED {ps['red_count']} | AMBER {ps['amber_count']} | GREEN {ps['green_count']}")
+          print(f"AUC: {gm.auc:.3f} | Budget: {ps['total_budget_bn']:.2f}bn | EAC: {ps['total_eac_bn']:.2f}bn")
+          PYEOF
